@@ -132,6 +132,85 @@ def test_promote_prunes_invalid_highlights(
     assert new_snap.highlights == ()
 
 
+def test_promote_no_probe_omits_schema_hashes(isolated_op_home: Path) -> None:
+    """`--no-probe` skips backend probing; resulting snapshot has no
+    schema_hash on any op. Useful for tests + fast iteration when
+    you don't want to spawn every backend."""
+    import sys
+    from pathlib import Path as _Path
+    fake = _Path(__file__).parent / "fake_backend_mcp.py"
+    _write_live(isolated_op_home / "op.json", [
+        {
+            "name": "fake",
+            "command": [sys.executable, str(fake)],
+            "ops": [{"name": "echo", "summary": "Echo"}],
+        },
+    ])
+    rc = promote_run(["--no-probe"])
+    assert rc == 0
+    snap = load_snapshot(isolated_op_home / "op.snapshot.json")
+    # Every op in the snapshot — meta-ops AND the fake.echo entry —
+    # should have schema_hash=None.
+    for entry in snap.ops:
+        assert entry.schema_hash is None
+
+
+def test_promote_with_probe_writes_schema_hashes(isolated_op_home: Path) -> None:
+    """Default promote (probe enabled) connects to each backend, fetches
+    tools/list, computes a hash per tool's inputSchema, and writes it
+    into the snapshot. Without that hash, schema-drift detection in
+    `sync` can't work."""
+    import sys
+    from pathlib import Path as _Path
+    fake = _Path(__file__).parent / "fake_backend_mcp.py"
+    _write_live(isolated_op_home / "op.json", [
+        {
+            "name": "fake",
+            "command": [sys.executable, str(fake)],
+            "ops": [
+                {"name": "echo", "summary": "Echo"},
+                {"name": "fail", "summary": "Always errors"},
+            ],
+        },
+    ])
+    rc = promote_run([])
+    assert rc == 0
+    snap = load_snapshot(isolated_op_home / "op.snapshot.json")
+
+    # Domain ops should have a schema_hash; meta-ops should not.
+    by_name = {e.name: e for e in snap.ops}
+    assert by_name["fake.echo"].schema_hash is not None
+    assert by_name["fake.echo"].schema_hash.startswith("sha256:")
+    assert by_name["fake.fail"].schema_hash is not None
+    assert by_name["list"].schema_hash is None
+    assert by_name["describe"].schema_hash is None
+
+
+def test_promote_unreachable_backend_skips_schema_hash(
+    isolated_op_home: Path,
+) -> None:
+    """A backend whose command is invalid (immediate exit / nonexistent
+    binary) shouldn't crash promote — it should just write the
+    snapshot entries without schema_hash for that backend's ops, so
+    the user can fix the backend later and re-promote."""
+    import sys
+    _write_live(isolated_op_home / "op.json", [
+        {
+            "name": "broken",
+            "command": [sys.executable, "-c", "import sys; sys.exit(1)"],
+            "ops": [{"name": "phantom", "summary": "Doesn't exist"}],
+        },
+    ])
+    rc = promote_run(["--probe-timeout", "1.0"])
+    assert rc == 0
+    snap = load_snapshot(isolated_op_home / "op.snapshot.json")
+    by_name = {e.name: e for e in snap.ops}
+    # The broken.phantom entry should still be in the snapshot (it's
+    # what op.json declares) — just without a schema_hash.
+    assert "broken.phantom" in by_name
+    assert by_name["broken.phantom"].schema_hash is None
+
+
 def test_promote_keeps_valid_highlights(isolated_op_home: Path) -> None:
     snap_path = isolated_op_home / "op.snapshot.json"
     snap_path.write_text(json.dumps({

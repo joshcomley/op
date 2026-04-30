@@ -89,16 +89,31 @@ class SnapshotEntry:
     namespace: str          # "meta" | backend name
     name: str               # full namespaced name, e.g. "recap.recap_all"
     summary: str
+    # Hash of the backend tool's inputSchema at promote time. Populated
+    # by `op promote` for domain ops by probing the backend's live
+    # tools/list. Snapshot entries without a hash (legacy snapshots,
+    # meta-ops, or backends that weren't reachable at promote time) carry
+    # None — the diff machinery skips schema comparison for those.
+    schema_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"namespace": self.namespace, "name": self.name, "summary": self.summary}
+        d: dict[str, Any] = {
+            "namespace": self.namespace,
+            "name":      self.name,
+            "summary":   self.summary,
+        }
+        if self.schema_hash is not None:
+            d["schema_hash"] = self.schema_hash
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SnapshotEntry":
+        sh = d.get("schema_hash")
         return cls(
             namespace=str(d["namespace"]),
             name=str(d["name"]),
             summary=str(d.get("summary", "")),
+            schema_hash=str(sh) if sh else None,
         )
 
 
@@ -200,4 +215,18 @@ def canonical_hash(highlights: tuple[str, ...], ops: tuple[SnapshotEntry, ...]) 
         ),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def canonical_schema_hash(schema: Any) -> str:
+    """Hash of one tool's `inputSchema`. Used to detect when a backend's
+    tool argument shape has drifted from what was captured at promote
+    time, so the agent can be told via `op({operation: "sync"})`.
+
+    Canonicalises by sort_keys to avoid spurious mismatches from JSON
+    key-order differences. None / empty schemas hash to a sentinel so
+    they compare equal to other empties."""
+    if schema is None:
+        schema = {}
+    canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()

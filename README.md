@@ -106,17 +106,23 @@ The original design discussion lives in cmd's
 
 ## Status
 
-**Phase 2 (current)**: backend wiring is live. The gateway spawns each
-backend declared in `op.json` at startup, holds the MCP-stdio connection
-for the gateway's lifetime, forwards `tools/call` to the right backend,
-and surfaces real per-backend health via `op({operation: "health"})`.
-Real schemas come back from `op({operation: "describe", args: {...}})`
-via the backend's cached `tools/list`. A supervisor task reconnects with
-exponential backoff when a backend crashes.
+**Phase 3 (current)**: schema-drift detection in `sync`. `op promote`
+now probes each backend's live `tools/list` and writes a canonical
+`schema_hash` per op into `op.snapshot.json`. At runtime,
+`op({operation: "sync"})` compares the snapshot's hash against the
+backend's current schema and reports any mismatches under
+`changed_schemas`. The agent can then call `describe` to see the new
+shape — all without invalidating the SDK's cached tool description.
 
-**Phase 1**: standalone gateway with meta-ops only (no backends).
-Superseded by Phase 2 — the meta-ops only mode is still reachable by
-setting `OP_DISABLE_POOL=1` or leaving `op.json`'s `backends` array empty.
+**Phase 2**: backend wiring. Each backend in `op.json` runs as a
+persistent stdio MCP child process; `tools/call` forwards over a
+supervisor-managed connection that reconnects with exponential backoff
+when a backend crashes. `health` reports real per-backend status;
+`describe` returns real `inputSchema` from cached `tools/list`.
 
-**Phase 3+**: schema-diff in `sync`, full machine migration. Tracked as
-issues against this repo.
+**Phase 1**: standalone gateway with meta-ops only. Still reachable via
+`OP_DISABLE_POOL=1` or an empty `backends` array.
+
+**Phase 4+**: full machine migration (port every MCP server in
+`~/.claude.json` into `op.json`), hot-reload of `op.json` without
+gateway restart, telemetry. Tracked as issues against this repo.
