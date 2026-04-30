@@ -106,8 +106,17 @@ The original design discussion lives in cmd's
 
 ## Status
 
-**Phase 1**: standalone gateway with meta-ops only (no backends). This repo's
-current state.
+**Phase 2 (current)**: backend wiring is live. The gateway spawns each
+backend declared in `op.json` at startup, holds the MCP-stdio connection
+for the gateway's lifetime, forwards `tools/call` to the right backend,
+and surfaces real per-backend health via `op({operation: "health"})`.
+Real schemas come back from `op({operation: "describe", args: {...}})`
+via the backend's cached `tools/list`. A supervisor task reconnects with
+exponential backoff when a backend crashes.
 
-**Phase 2+**: backend wiring, drift handling, full machine migration. Tracked
-as issues against this repo.
+**Phase 1**: standalone gateway with meta-ops only (no backends).
+Superseded by Phase 2 — the meta-ops only mode is still reachable by
+setting `OP_DISABLE_POOL=1` or leaving `op.json`'s `backends` array empty.
+
+**Phase 3+**: schema-diff in `sync`, full machine migration. Tracked as
+issues against this repo.
