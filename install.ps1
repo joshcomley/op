@@ -4,7 +4,7 @@
 # `git pull` to pick up new code.
 #
 # Steps:
-#   1. pip install -r requirements.txt (mcp, pydantic)
+#   1. pip install -e . (installs op_gateway + op_cli + runtime deps)
 #   2. Seed op.json from op.json.example if it doesn't exist
 #   3. Run `op promote` to generate op.snapshot.json
 #   4. Print the JSON snippet for registering op in ~/.claude.json
@@ -24,11 +24,15 @@ Set-Location $RepoRoot
 Write-Host "[op install] repo root: $RepoRoot"
 Write-Host ""
 
-# ---- Step 1: dependencies -------------------------------------------------
-Write-Host "[op install] installing Python dependencies..."
-& python -m pip install -r requirements.txt --quiet
+# ---- Step 1: install package + dependencies -------------------------------
+# Editable install puts op_gateway + op_cli on sys.path globally so
+# `python -m op_gateway.server` works from any cwd. Required for MCP
+# clients (Claude Code, in particular) that don't honor the `cwd` field
+# in the stdio server config.
+Write-Host "[op install] installing op-gateway (editable) + dependencies..."
+& python -m pip install -e . --quiet
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "pip install failed"
+    Write-Error "pip install -e . failed"
     exit 1
 }
 
@@ -61,10 +65,11 @@ Write-Host "Add this entry under `"mcpServers`":"
 Write-Host ""
 Write-Host '  "op": {'
 Write-Host '    "command": "python",'
-$cwdEscaped = $RepoRoot -replace '\\', '\\'
-Write-Host "    `"args`": [`"-m`", `"op_gateway.server`"],"
-Write-Host "    `"cwd`":  `"$cwdEscaped`""
+Write-Host "    `"args`": [`"-m`", `"op_gateway.server`"]"
 Write-Host '  }'
+Write-Host ""
+Write-Host "(No `"cwd`" needed — pip install -e put op_gateway on sys.path."
+Write-Host " Some MCP clients ignore the cwd field anyway.)"
 Write-Host ""
 Write-Host "See INSTALL.md for the full snippet and rationale."
 Write-Host "==========================================================="

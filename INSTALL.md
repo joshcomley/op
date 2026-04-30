@@ -8,9 +8,10 @@ cd C:\D\op
 .\install.ps1
 ```
 
-`install.ps1` runs `pip install`, seeds `op.json` from the example if you
-don't already have one, and runs `op promote` to generate the initial
-`op.snapshot.json`.
+`install.ps1` runs `pip install -e .` (so `op_gateway` and `op_cli` go on
+`sys.path` globally — `python -m op_gateway.server` then works from any
+working directory), seeds `op.json` from the example if you don't already
+have one, and runs `op promote` to generate the initial `op.snapshot.json`.
 
 ## 2. Register `op` in your MCP config
 
@@ -22,10 +23,14 @@ Add this entry under `"mcpServers"`:
 ```json
 "op": {
   "command": "python",
-  "args":    ["-m", "op_gateway.server"],
-  "cwd":     "C:\\D\\op"
+  "args":    ["-m", "op_gateway.server"]
 }
 ```
+
+No `cwd` field is needed — `op_gateway` is installed on `sys.path` by
+`install.ps1`. (Some MCP clients, including Claude Code, ignore `cwd`
+in stdio server configs anyway, so an editable install is the only
+reliable way to launch the server regardless of who spawns it.)
 
 Restart any running Claude session to pick it up. The agent will see one
 tool named `op` with the meta-ops + your op.json's backends as the catalog.
