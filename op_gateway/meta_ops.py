@@ -41,7 +41,7 @@ def dispatch_meta(
     if operation == "describe":
         return handle_describe(snapshot, pool, args)
     if operation == "sync":
-        return handle_sync(snapshot, live)
+        return handle_sync(snapshot, live, pool)
     if operation == "health":
         return handle_health(live, pool)
     if operation == "manifest_version":
@@ -133,10 +133,19 @@ def handle_describe(
     return response
 
 
-def handle_sync(snapshot: Snapshot, live: LiveManifest) -> dict[str, Any]:
+def handle_sync(
+    snapshot: Snapshot,
+    live: LiveManifest,
+    pool: BackendPool | None,
+) -> dict[str, Any]:
     """Diff the snapshot against the live registry. Zero cache cost — the
-    SDK's cached tool description doesn't change."""
-    return diff(snapshot, live).to_dict()
+    SDK's cached tool description doesn't change.
+
+    When a pool is wired, the result includes `changed_schemas`: ops
+    whose backend `inputSchema` has drifted since the snapshot was
+    promoted. Without a pool, only name-level adds/removes are
+    reported (sufficient for the standalone Phase-1 mode)."""
+    return diff(snapshot, live, pool).to_dict()
 
 
 def handle_health(live: LiveManifest, pool: BackendPool | None) -> dict[str, Any]:
