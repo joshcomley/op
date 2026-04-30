@@ -8,9 +8,10 @@ internal stack traces.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from . import meta_ops
+from . import events, meta_ops
 from .backend_pool import BackendPool, BackendUnavailable
 from .manifest import LiveManifest, Snapshot
 
@@ -32,6 +33,31 @@ async def dispatch(
     `pool` is None when the gateway is constructed without backend
     wiring (Phase 1 tests). In that mode, domain ops return a
     deterministic placeholder; meta-ops still work."""
+    start = time.perf_counter()
+    result = await _dispatch_inner(operation, args, snapshot, live, pool)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    is_error = isinstance(result, dict) and "error" in result
+    events.emit_dispatch(
+        operation   = operation if isinstance(operation, str) else "<invalid>",
+        duration_ms = duration_ms,
+        is_meta     = isinstance(operation, str) and "." not in operation,
+        namespace   = (operation.split(".", 1)[0]
+                       if isinstance(operation, str) and "." in operation
+                       else None),
+        success     = not is_error,
+        error       = result.get("error") if is_error and isinstance(result, dict) else None,
+    )
+    return result
+
+
+async def _dispatch_inner(
+    operation: str,
+    args: dict[str, Any] | None,
+    snapshot: Snapshot,
+    live: LiveManifest,
+    pool: BackendPool | None,
+) -> dict[str, Any]:
+    """The actual dispatch logic. Wrapped by `dispatch` for telemetry."""
     if not isinstance(operation, str) or not operation:
         return {
             "error": "missing or invalid 'operation' parameter",
