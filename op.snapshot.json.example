@@ -1,0 +1,13 @@
+{
+  "snapshot_version": "0.0.1",
+  "promoted_at": "2026-04-30T00:00:00Z",
+  "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "highlights": [],
+  "ops": [
+    {"namespace": "meta", "name": "list", "summary": "Enumerate available ops"},
+    {"namespace": "meta", "name": "describe", "summary": "Schema + docs for one op"},
+    {"namespace": "meta", "name": "sync", "summary": "Diff vs current live registry"},
+    {"namespace": "meta", "name": "health", "summary": "Per-backend availability"},
+    {"namespace": "meta", "name": "manifest_version", "summary": "Snapshot version + hash"}
+  ]
+}

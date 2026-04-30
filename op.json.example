@@ -1,0 +1,22 @@
+{
+  "registry_version": "1",
+  "env": {
+    "AMC_ROOT": "C:/D/Biosphere/Self/storage/clones/Aim.Mcp.Common"
+  },
+  "backends": [
+    {
+      "name": "recap",
+      "command": ["node", "${AMC_ROOT}/code/recap-mcp/index.js"],
+      "cwd": "${AMC_ROOT}/code/recap-mcp",
+      "env": {},
+      "ops": [
+        {"name": "recap", "summary": "Catch up on recent work in current project"},
+        {"name": "recap_all", "summary": "Multi-project recap with index"},
+        {"name": "recap_forgotten", "summary": "Cross-project hunt for abandoned work"},
+        {"name": "recap_status", "summary": "Status of an in-flight recap job"},
+        {"name": "recap_cancel", "summary": "Cancel an in-flight recap job"},
+        {"name": "recap_list_jobs", "summary": "List all recap jobs"}
+      ]
+    }
+  ]
+}
