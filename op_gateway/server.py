@@ -10,6 +10,7 @@ Run as:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -30,6 +31,14 @@ log = logging.getLogger(__name__)
 # Disable backend wiring entirely. Useful for tests + the pre-Phase-2
 # stand-alone mode where the gateway only serves meta-ops.
 _DISABLE_POOL_ENV = "OP_DISABLE_POOL"
+
+# Disable the hot-reload watcher. The gateway loads op.json once at
+# startup and never re-reads it. Edits require a gateway restart
+# (e.g. closing + reopening the Claude session).
+_DISABLE_WATCHER_ENV = "OP_DISABLE_WATCHER"
+
+# Poll interval for the op.json mtime check.
+_RELOAD_POLL_INTERVAL_SECS = 2.0
 
 
 def _load_runtime_files() -> tuple[Snapshot, LiveManifest]:
@@ -61,13 +70,21 @@ def build_mcp() -> FastMCP:
     SDK closes it (gateway process exits). Tool handlers reach the pool
     through a closure variable set during lifespan setup.
     """
-    snapshot, live = _load_runtime_files()
-    description = catalog.build_description(snapshot)
+    initial_snapshot, initial_live = _load_runtime_files()
+    description = catalog.build_description(initial_snapshot)
 
-    # Pool reference held in a closure-mutable container so the tool
-    # handler can pick it up after lifespan-setup. None means "no pool"
-    # — domain ops return a deterministic placeholder in that mode.
-    state: dict[str, BackendPool | None] = {"pool": None}
+    # Mutable state held in a closure-shared container so:
+    #   * the tool handler can pick the pool up after lifespan-setup
+    #   * the hot-reload watcher can swap `live` in place when op.json
+    #     changes (the snapshot stays fixed for the gateway's lifetime;
+    #     it changes only via `op promote` + restart)
+    # None values for the pool mean "no pool" — domain ops return a
+    # deterministic placeholder in that mode.
+    state: dict[str, Any] = {
+        "pool":     None,
+        "live":     initial_live,
+        "snapshot": initial_snapshot,
+    }
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -75,20 +92,37 @@ def build_mcp() -> FastMCP:
             log.info("op-gateway: pool disabled by %s; meta-ops only.", _DISABLE_POOL_ENV)
             yield {}
             return
-        if not live.backends:
+        if not initial_live.backends:
             log.info("op-gateway: no backends declared in op.json; meta-ops only.")
             yield {}
             return
-        pool = BackendPool(list(live.backends))
+        pool = BackendPool(list(initial_live.backends))
+        watcher_task: asyncio.Task[None] | None = None
         try:
             await pool.start_all()
             state["pool"] = pool
             log.info(
                 "op-gateway: backend pool started (%d backends): %s",
-                len(live.backends), ", ".join(b.name for b in live.backends),
+                len(initial_live.backends),
+                ", ".join(b.name for b in initial_live.backends),
             )
+            # Hot-reload watcher: poll op.json's mtime and reconcile
+            # the pool when it changes. The agent learns about new ops
+            # via `op({operation: "sync"})` — the SDK's cached tool
+            # description never changes from this.
+            if not os.environ.get(_DISABLE_WATCHER_ENV):
+                watcher_task = asyncio.create_task(
+                    _reload_watcher(state, paths.live_manifest_path()),
+                    name="op-gateway-reload-watcher",
+                )
             yield {"pool": pool}
         finally:
+            if watcher_task is not None:
+                watcher_task.cancel()
+                try:
+                    await watcher_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             state["pool"] = None
             await pool.stop_all()
 
@@ -104,14 +138,97 @@ def build_mcp() -> FastMCP:
             description="Optional op-specific arguments object.",
         ),
     ) -> str:
+        # Resolve current state at call time. `live` is the only thing
+        # that mutates during the gateway's lifetime — via the
+        # hot-reload watcher when op.json changes. `snapshot` is fixed
+        # (changes only via `op promote` + gateway restart) — that's
+        # exactly what keeps the SDK's cached tool description stable.
         result = await dispatch.dispatch(
-            operation, args, snapshot, live, state.get("pool"),
+            operation,
+            args,
+            state["snapshot"],
+            state["live"],
+            state.get("pool"),
         )
         return json.dumps(result, separators=(",", ":"))
 
     op.__doc__ = description
     mcp.tool()(op)
     return mcp
+
+
+async def _reload_watcher(
+    state: dict[str, Any],
+    op_json_path: Any,
+) -> None:
+    """Background task that polls op.json's mtime and reconciles the
+    backend pool when it changes.
+
+    Mtime polling beats filesystem-event watching here because:
+      * cross-platform (no watchdog dependency)
+      * resilient to editor save patterns (some editors write to a temp
+        file then atomically rename, which trips fsevents but updates
+        mtime cleanly)
+      * sub-2s polling is fine for a config file that's edited by hand
+
+    On a parse error, the previous pool state is preserved and an
+    error is logged — better than tearing down everyone's connections
+    because someone left a trailing comma in op.json. The watcher
+    keeps polling and will converge once the file is valid again.
+    """
+    last_mtime: float | None = None
+    try:
+        last_mtime = op_json_path.stat().st_mtime
+    except OSError:
+        # File didn't exist at startup. The lifespan would have failed
+        # earlier; this branch is defensive.
+        return
+
+    while True:
+        await asyncio.sleep(_RELOAD_POLL_INTERVAL_SECS)
+        pool = state.get("pool")
+        if pool is None:
+            # Pool got torn down (lifespan exit). Watcher is about to
+            # be cancelled too; just return.
+            return
+        try:
+            current_mtime = op_json_path.stat().st_mtime
+        except OSError as e:
+            log.warning(
+                "op-gateway: reload watcher couldn't stat %s: %s",
+                op_json_path, e,
+            )
+            continue
+        if last_mtime is not None and current_mtime == last_mtime:
+            continue
+        # File changed. Try to load it; on failure, leave the pool
+        # alone and keep polling.
+        try:
+            new_live = load_live(op_json_path)
+        except Exception as e:
+            log.error(
+                "op-gateway: reload of %s failed (%s: %s); keeping previous "
+                "pool state. Edit the file again to retry.",
+                op_json_path, type(e).__name__, e,
+            )
+            # Don't update last_mtime — we want to retry the same edit
+            # once the user fixes it. (If they make a SECOND edit, the
+            # mtime will change again and we'll reload then.)
+            continue
+        log.info("op-gateway: reload watcher detected op.json change; reconciling.")
+        try:
+            actions = await pool.reconcile(list(new_live.backends))
+            # Swap `live` in place so subsequent dispatch() calls see
+            # the new declared ops + backends. The snapshot stays put.
+            state["live"] = new_live
+            log.info("op-gateway: reconcile actions: %s", actions)
+        except Exception as e:
+            log.exception(
+                "op-gateway: reconcile failed (%s: %s); some backends may "
+                "be in an inconsistent state.",
+                type(e).__name__, e,
+            )
+        last_mtime = current_mtime
 
 
 def main() -> None:

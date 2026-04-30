@@ -378,6 +378,77 @@ class BackendPool:
                 return tool
         return None
 
+    async def reconcile(self, new_backends: list[BackendDef]) -> dict[str, str]:
+        """Re-align the pool to a new backend list.
+
+        Used by the hot-reload watcher when `op.json` changes. Computes
+        the set diff between the current connections and the new defs,
+        and for each name:
+
+          * not in current, in new          -> spawn fresh
+          * in current, not in new          -> stop
+          * in both, command/cwd/env equal  -> leave alone
+          * in both, anything differs       -> stop + spawn fresh
+
+        Returns a {backend_name: action} map for caller logging /
+        tests. Safe to call concurrently with in-flight tool calls
+        because each connection has its own per-call lock.
+
+        The SDK's view of the world (the cached `op` tool definition)
+        is unaffected by reconcile — that's tied to the snapshot, not
+        the live registry. The agent only learns about the new state
+        by calling `op({operation: "sync"})`.
+        """
+        current_names = set(self._connections.keys())
+        new_by_name = {b.name: b for b in new_backends}
+        new_names = set(new_by_name)
+
+        actions: dict[str, str] = {}
+
+        # 1. Stop backends removed from op.json.
+        for name in current_names - new_names:
+            await self._connections[name].stop()
+            del self._connections[name]
+            actions[name] = "stopped"
+            log.info("op-gateway: reconcile stopped backend %r (removed from op.json)", name)
+
+        # 2. Restart backends whose definition changed.
+        for name in current_names & new_names:
+            current_def = self._connections[name].defn
+            new_def = new_by_name[name]
+            if _backend_def_equal(current_def, new_def):
+                actions[name] = "unchanged"
+                continue
+            await self._connections[name].stop()
+            self._connections[name] = BackendConnection(new_def)
+            await self._connections[name].start()
+            actions[name] = "restarted"
+            log.info("op-gateway: reconcile restarted backend %r (definition changed)", name)
+
+        # 3. Spawn backends newly added.
+        for name in new_names - current_names:
+            self._connections[name] = BackendConnection(new_by_name[name])
+            await self._connections[name].start()
+            actions[name] = "started"
+            log.info("op-gateway: reconcile started backend %r (added to op.json)", name)
+
+        return actions
+
+
+def _backend_def_equal(a: BackendDef, b: BackendDef) -> bool:
+    """True iff two backend defs would spawn the same subprocess.
+
+    `ops` (the manifest's declared ops list) is intentionally NOT
+    compared — it's a hint, not part of how the backend gets spawned.
+    Adding/removing entries to `ops` doesn't require a backend
+    restart; the live `tools/list` is the source of truth for what
+    the backend actually offers."""
+    return (
+        a.command == b.command
+        and a.cwd == b.cwd
+        and a.env == b.env
+    )
+
 
 def _serialise_call_result(result: Any) -> dict[str, Any]:
     """Turn an MCP CallToolResult into a JSON-serialisable dict.

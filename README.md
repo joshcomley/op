@@ -106,23 +106,29 @@ The original design discussion lives in cmd's
 
 ## Status
 
-**Phase 3 (current)**: schema-drift detection in `sync`. `op promote`
-now probes each backend's live `tools/list` and writes a canonical
-`schema_hash` per op into `op.snapshot.json`. At runtime,
-`op({operation: "sync"})` compares the snapshot's hash against the
-backend's current schema and reports any mismatches under
-`changed_schemas`. The agent can then call `describe` to see the new
-shape — all without invalidating the SDK's cached tool description.
+**Phase 4 (current)**: hot-reload of `op.json`. The gateway polls
+`op.json`'s mtime every 2s; when it changes, it reloads, compares
+against current backend connections, and reconciles: new backends
+spawn, removed backends stop, modified ones (different command/cwd/
+env) restart. The agent learns about new ops by calling
+`op({operation: "sync"})` — the SDK's cached tool description still
+never changes from any of this. Disable via `OP_DISABLE_WATCHER=1`.
+Malformed `op.json` keeps the previous pool state intact and logs
+the error; the watcher retries on the next mtime change.
+
+**Phase 3**: schema-drift detection in `sync`. `op promote` probes
+each backend, writes `schema_hash` per op into `op.snapshot.json`.
+`op({operation: "sync"})` compares hashes against live backend
+schemas and reports `changed_schemas`. Zero cache cost.
 
 **Phase 2**: backend wiring. Each backend in `op.json` runs as a
-persistent stdio MCP child process; `tools/call` forwards over a
-supervisor-managed connection that reconnects with exponential backoff
-when a backend crashes. `health` reports real per-backend status;
-`describe` returns real `inputSchema` from cached `tools/list`.
+persistent stdio MCP child; `tools/call` forwards over a
+supervisor-managed connection that reconnects with exponential
+backoff. `health` reports real per-backend status.
 
-**Phase 1**: standalone gateway with meta-ops only. Still reachable via
-`OP_DISABLE_POOL=1` or an empty `backends` array.
+**Phase 1**: standalone gateway with meta-ops only. Still reachable
+via `OP_DISABLE_POOL=1` or an empty `backends` array.
 
-**Phase 4+**: full machine migration (port every MCP server in
-`~/.claude.json` into `op.json`), hot-reload of `op.json` without
-gateway restart, telemetry. Tracked as issues against this repo.
+**Phase 5+**: full machine migration (port every MCP server in
+`~/.claude.json` into `op.json`), telemetry. Tracked as issues
+against this repo.
