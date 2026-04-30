@@ -22,14 +22,19 @@ git clone https://github.com/joshcomley/op C:\D\op
 cd C:\D\op
 pip install -r requirements.txt
 
-# Copy the example registry to your live registry
+# Copy the example registry — populated with all 10 AMC backends out
+# of the box (recap, chatfork, consult, mcpup, aim-doc, ver, ship-pr,
+# claude-dispatch, autoloop, dotnet-common). Edit AMC_ROOT under `env`
+# if your AMC clone lives elsewhere.
 cp op.json.example op.json
 
-# Promote to a fresh snapshot (regenerates op.snapshot.json from op.json)
+# Promote: probe the backends, snapshot their schemas
 python -m op_cli promote
 
-# Register `op` in ~/.claude.json (or your project's .mcp.json)
-# See INSTALL.md for the JSON snippet.
+# Wire `op` into ~/.claude.json (idempotent; backs up the file first)
+python -m op_cli register
+
+# Restart your Claude session. That's it.
 ```
 
 ## How it works

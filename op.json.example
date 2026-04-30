@@ -6,16 +6,133 @@
   "backends": [
     {
       "name": "recap",
-      "command": ["node", "${AMC_ROOT}/code/recap-mcp/index.js"],
+      "command": ["node", "${AMC_ROOT}/code/recap-mcp/recap-server.mjs"],
       "cwd": "${AMC_ROOT}/code/recap-mcp",
       "env": {},
       "ops": [
-        {"name": "recap", "summary": "Catch up on recent work in current project"},
-        {"name": "recap_all", "summary": "Multi-project recap with index"},
-        {"name": "recap_forgotten", "summary": "Cross-project hunt for abandoned work"},
-        {"name": "recap_status", "summary": "Status of an in-flight recap job"},
-        {"name": "recap_cancel", "summary": "Cancel an in-flight recap job"},
-        {"name": "recap_list_jobs", "summary": "List all recap jobs"}
+        {"name": "recap",                    "summary": "Catch up on recent work in current project"},
+        {"name": "recap_status",             "summary": "Status of an in-flight recap job"},
+        {"name": "recap_cancel",             "summary": "Cancel an in-flight recap job"},
+        {"name": "recap_list_jobs",          "summary": "List all recap jobs"},
+        {"name": "recap_forget_project",     "summary": "Hide a project from recap"},
+        {"name": "recap_unforget_project",   "summary": "Re-include a forgotten project"},
+        {"name": "recap_list_ignored",       "summary": "List forgotten projects"}
+      ]
+    },
+    {
+      "name": "chatfork",
+      "command": ["node", "${AMC_ROOT}/code/chatfork-mcp/chatfork-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/chatfork-mcp",
+      "env": {},
+      "ops": [
+        {"name": "chatfork",       "summary": "Fork a Claude session into a new chat window"},
+        {"name": "chatfork_id",    "summary": "Same as chatfork, returns the new session ID"},
+        {"name": "context_usage",  "summary": "Print current session's context-window usage"},
+        {"name": "ctx",            "summary": "Alias for context_usage"}
+      ]
+    },
+    {
+      "name": "consult",
+      "command": ["node", "${AMC_ROOT}/code/consult-mcp/consult-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/consult-mcp",
+      "env": {},
+      "ops": [
+        {"name": "consult",            "summary": "Start a multi-personality Claude consultation"},
+        {"name": "respond",            "summary": "Respond as one personality in a consultation"},
+        {"name": "get_consultation",   "summary": "Fetch a consultation's transcript"},
+        {"name": "list_consults",      "summary": "List active + recent consultations"},
+        {"name": "list_personalities", "summary": "List available consultation personalities"},
+        {"name": "save_personality",   "summary": "Save a custom personality"},
+        {"name": "invite",             "summary": "Invite a personality into an existing consult"}
+      ]
+    },
+    {
+      "name": "mcpup",
+      "command": ["node", "${AMC_ROOT}/code/mcpup-mcp/mcpup-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/mcpup-mcp",
+      "env": {},
+      "ops": [
+        {"name": "mcpup",      "summary": "Pull AMC + rebuild .NET exes + re-register every server"},
+        {"name": "mcpupx",     "summary": "Same as mcpup but force-kills running .NET MCP processes"},
+        {"name": "mcpkill",    "summary": "Kill running AMC MCP processes whose code differs from disk HEAD"},
+        {"name": "mcpup_info", "summary": "Report AMC clone location + what the registrar would write"}
+      ]
+    },
+    {
+      "name": "aim-doc",
+      "command": ["node", "${AMC_ROOT}/code/aim-doc-mcp/aim-doc-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/aim-doc-mcp",
+      "env": {},
+      "ops": [
+        {"name": "doc",                "summary": "Run the doc-maintenance audit + close-the-gap sweep"},
+        {"name": "doc_audit",          "summary": "Audit-only pass (no rewrites)"},
+        {"name": "doc_disable",        "summary": "Turn off doc maintenance for this project"},
+        {"name": "doc_record_audit",   "summary": "Record an audit's outcome to .aim/settings.json"},
+        {"name": "doc_record_sweep",   "summary": "Record a sweep's outcome to .aim/settings.json"},
+        {"name": "doc_rules",          "summary": "Fetch the canonical doc-maintenance rules"},
+        {"name": "doc_status",         "summary": "Status of the doc-maintenance pattern for this project"}
+      ]
+    },
+    {
+      "name": "ver",
+      "command": ["node", "${AMC_ROOT}/code/ver-mcp/ver-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/ver-mcp",
+      "env": {},
+      "ops": [
+        {"name": "ver",                "summary": "Install the version-badge pattern in this project"},
+        {"name": "ver_disable",        "summary": "Turn off version-badge maintenance"},
+        {"name": "ver_record_install", "summary": "Record an install's outcome"},
+        {"name": "ver_rules",          "summary": "Fetch the version-badge rules"},
+        {"name": "ver_status",         "summary": "Status of the version-badge pattern for this project"}
+      ]
+    },
+    {
+      "name": "ship-pr",
+      "command": ["node", "${AMC_ROOT}/code/ship-pr-mcp/ship-pr-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/ship-pr-mcp",
+      "env": {},
+      "ops": [
+        {"name": "ship_pr",     "summary": "Stage + commit + push + PR + checks + merge in one call"},
+        {"name": "ship_status", "summary": "Status check for a previously-started ship_pr run"}
+      ]
+    },
+    {
+      "name": "claude-dispatch",
+      "command": ["node", "${AMC_ROOT}/code/claude-dispatch-mcp/dispatch-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/claude-dispatch-mcp",
+      "env": {},
+      "ops": [
+        {"name": "claude_dispatch", "summary": "Open a fresh Claude chat in another VS Code window with a pre-submitted prompt"}
+      ]
+    },
+    {
+      "name": "autoloop",
+      "command": ["node", "${AMC_ROOT}/code/autoloop-mcp/autoloop-server.mjs"],
+      "cwd": "${AMC_ROOT}/code/autoloop-mcp",
+      "env": {},
+      "ops": [
+        {"name": "autoloop_arm",         "summary": "Arm a session for unattended lean-and-continue"},
+        {"name": "autoloop_disarm",      "summary": "Cancel autoloop for a session"},
+        {"name": "autoloop_status",      "summary": "Inspect autoloop state for a session"},
+        {"name": "autoloop_set_default", "summary": "Set a default autoloop config"}
+      ]
+    },
+    {
+      "name": "dotnet-common",
+      "command": ["${AMC_ROOT}/code/CommonMcpServer/bin/Debug/net10.0-windows10.0.22621.0/CommonMcpServer.exe"],
+      "cwd": "${AMC_ROOT}/code/CommonMcpServer",
+      "env": {},
+      "ops": [
+        {"name": "ocr_image",              "summary": "OCR a PNG/JPG via Tesseract"},
+        {"name": "read_docx",              "summary": "Extract plain text from a .docx file"},
+        {"name": "notify_user",            "summary": "Show a Windows toast/overlay notification"},
+        {"name": "ask_user",               "summary": "Show a GUI prompt and block until user answers"},
+        {"name": "confirm_user",           "summary": "Yes/no GUI confirmation, blocking"},
+        {"name": "ask_every_chat",         "summary": "Broadcast a question to every active Claude Code chat"},
+        {"name": "ask_every_chat_results", "summary": "Aggregate results from a broadcast question"},
+        {"name": "ask_every_chat_status",  "summary": "Status of an in-flight broadcast"},
+        {"name": "elevate_run",            "summary": "Run an elevated (admin) command via the Cmd-Admin gate"},
+        {"name": "elevate_poll",           "summary": "Poll for elevate_run result"}
       ]
     }
   ]
