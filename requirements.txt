@@ -1,2 +1,6 @@
 mcp>=1.26.0
 pydantic>=2.0
+
+# dev / tests
+pytest>=8.0
+pytest-asyncio>=1.0
