@@ -106,7 +106,20 @@ The original design discussion lives in cmd's
 
 ## Status
 
-**Phase 4 (current)**: hot-reload of `op.json`. The gateway polls
+**Phase 5 (current)**: structured telemetry via JSONL event sink. Set
+`OP_EVENTS_FILE=<path>` to enable; off by default. Three event kinds:
+
+  * `dispatch` — every `op()` call. operation, duration_ms, is_meta,
+    namespace, success/error.
+  * `backend_state` — every backend status transition (connecting →
+    up, up → reconnecting, etc.) with last_error + reconnect_attempt.
+  * `reconcile` — hot-reload reconciliation actions per backend.
+
+Format is one event per line for easy stream-parsing. Use cases:
+cache-burn correlation analysis, cmd's `/workers` page, ad-hoc
+"how often did we reconnect today?" queries.
+
+**Phase 4**: hot-reload of `op.json`. The gateway polls
 `op.json`'s mtime every 2s; when it changes, it reloads, compares
 against current backend connections, and reconciles: new backends
 spawn, removed backends stop, modified ones (different command/cwd/
@@ -129,6 +142,5 @@ backoff. `health` reports real per-backend status.
 **Phase 1**: standalone gateway with meta-ops only. Still reachable
 via `OP_DISABLE_POOL=1` or an empty `backends` array.
 
-**Phase 5+**: full machine migration (port every MCP server in
-`~/.claude.json` into `op.json`), telemetry. Tracked as issues
-against this repo.
+**Phase 6+**: full machine migration (port every MCP server in
+`~/.claude.json` into `op.json`). Tracked as issues against this repo.

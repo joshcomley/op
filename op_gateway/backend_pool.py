@@ -38,6 +38,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from . import events
 from .manifest import BackendDef
 
 
@@ -154,7 +155,14 @@ class BackendConnection:
             except (asyncio.CancelledError, Exception):
                 pass
         self._supervisor = None
+        old_status = self.status.status
         self.status.status = STATUS_STOPPED
+        if old_status != STATUS_STOPPED:
+            events.emit_backend_state(
+                backend=self.defn.name,
+                old_status=old_status,
+                new_status=STATUS_STOPPED,
+            )
 
     async def wait_until_up(self, timeout_secs: float = 5.0) -> bool:
         """Block until the backend reaches `up` or the timeout expires.
@@ -212,6 +220,25 @@ class BackendConnection:
 
     # ----- internals ------------------------------------------------
 
+    def _transition(self, new_status: str) -> None:
+        """Update the status atomically and emit a telemetry event.
+
+        Centralised because every state mutation should be visible to
+        downstream tooling (cmd /workers, ad-hoc analysis). Emitting on
+        a state-machine boundary rather than scattered set sites means
+        we don't double-fire on no-op writes."""
+        old = self.status.status
+        if old == new_status:
+            return
+        self.status.status = new_status
+        events.emit_backend_state(
+            backend=self.defn.name,
+            old_status=old,
+            new_status=new_status,
+            last_error=self.status.last_error,
+            reconnect_attempt=self.status.reconnect_attempt,
+        )
+
     async def _run(self) -> None:
         """Supervisor loop: connect, wait for the connection to die,
         reconnect with backoff. Exits cleanly on `stop()`."""
@@ -228,14 +255,16 @@ class BackendConnection:
                     return
                 # Connection ended naturally (rare for stdio backends —
                 # usually means the child exited). Reconnect.
-                self.status.status = STATUS_RECONNECTING
+                self._transition(STATUS_RECONNECTING)
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 self.status.last_error = str(exc)
-                self.status.status = STATUS_RECONNECTING if attempt > 0 else STATUS_DOWN
                 attempt += 1
                 self.status.reconnect_attempt = attempt
+                self._transition(
+                    STATUS_RECONNECTING if attempt > 1 else STATUS_DOWN,
+                )
             if self._closing:
                 return
             delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
@@ -252,7 +281,7 @@ class BackendConnection:
     async def _connect_once(self) -> None:
         """Connect, initialize, list tools, then block until the session
         ends. Cleanup is in finally so the AsyncExitStack always closes."""
-        self.status.status = STATUS_CONNECTING
+        self._transition(STATUS_CONNECTING)
         self.status.next_retry_at = None
         params = StdioServerParameters(
             command=self.defn.command[0],
@@ -267,12 +296,12 @@ class BackendConnection:
             await self._session.initialize()
             tools_result = await self._session.list_tools()
             self._tools = list(tools_result.tools)
-            self.status.status            = STATUS_UP
             self.status.started_at        = time.time()
             self.status.last_seen         = time.time()
             self.status.last_error        = None
             self.status.tool_count        = len(self._tools)
             self.status.reconnect_attempt = 0
+            self._transition(STATUS_UP)
             log.info(
                 "op-gateway: backend %r up (%d tools)",
                 self.defn.name, len(self._tools),
@@ -299,7 +328,7 @@ class BackendConnection:
         self._stack = None
         self._session = None
         if self.status.status == STATUS_UP:
-            self.status.status = STATUS_RECONNECTING
+            self._transition(STATUS_RECONNECTING)
 
 
 class BackendPool:
@@ -398,6 +427,10 @@ class BackendPool:
         is unaffected by reconcile — that's tied to the snapshot, not
         the live registry. The agent only learns about the new state
         by calling `op({operation: "sync"})`.
+
+        Emits one `reconcile` telemetry event after the diff is
+        applied. Per-backend state transitions during start/stop/
+        restart fire their own `backend_state` events.
         """
         current_names = set(self._connections.keys())
         new_by_name = {b.name: b for b in new_backends}
@@ -432,6 +465,7 @@ class BackendPool:
             actions[name] = "started"
             log.info("op-gateway: reconcile started backend %r (added to op.json)", name)
 
+        events.emit_reconcile(actions)
         return actions
 
 

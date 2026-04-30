@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from . import catalog, dispatch, paths
+from . import catalog, dispatch, events, paths
 from .backend_pool import BackendPool
 from .manifest import LiveManifest, Snapshot, load_live, load_snapshot
 
@@ -88,43 +88,54 @@ def build_mcp() -> FastMCP:
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-        if os.environ.get(_DISABLE_POOL_ENV):
-            log.info("op-gateway: pool disabled by %s; meta-ops only.", _DISABLE_POOL_ENV)
-            yield {}
-            return
-        if not initial_live.backends:
-            log.info("op-gateway: no backends declared in op.json; meta-ops only.")
-            yield {}
-            return
-        pool = BackendPool(list(initial_live.backends))
-        watcher_task: asyncio.Task[None] | None = None
+        # Wire the telemetry sink for the gateway's lifetime. No-op when
+        # OP_EVENTS_FILE isn't set — zero overhead in the hot path.
+        sink = events.sink_from_env()
+        events.set_sink(sink)
         try:
-            await pool.start_all()
-            state["pool"] = pool
-            log.info(
-                "op-gateway: backend pool started (%d backends): %s",
-                len(initial_live.backends),
-                ", ".join(b.name for b in initial_live.backends),
-            )
-            # Hot-reload watcher: poll op.json's mtime and reconcile
-            # the pool when it changes. The agent learns about new ops
-            # via `op({operation: "sync"})` — the SDK's cached tool
-            # description never changes from this.
-            if not os.environ.get(_DISABLE_WATCHER_ENV):
-                watcher_task = asyncio.create_task(
-                    _reload_watcher(state, paths.live_manifest_path()),
-                    name="op-gateway-reload-watcher",
+            if os.environ.get(_DISABLE_POOL_ENV):
+                log.info(
+                    "op-gateway: pool disabled by %s; meta-ops only.",
+                    _DISABLE_POOL_ENV,
                 )
-            yield {"pool": pool}
+                yield {}
+                return
+            if not initial_live.backends:
+                log.info("op-gateway: no backends declared in op.json; meta-ops only.")
+                yield {}
+                return
+            pool = BackendPool(list(initial_live.backends))
+            watcher_task: asyncio.Task[None] | None = None
+            try:
+                await pool.start_all()
+                state["pool"] = pool
+                log.info(
+                    "op-gateway: backend pool started (%d backends): %s",
+                    len(initial_live.backends),
+                    ", ".join(b.name for b in initial_live.backends),
+                )
+                # Hot-reload watcher: poll op.json's mtime and reconcile
+                # the pool when it changes. The agent learns about new
+                # ops via `op({operation: "sync"})` — the SDK's cached
+                # tool description never changes from this.
+                if not os.environ.get(_DISABLE_WATCHER_ENV):
+                    watcher_task = asyncio.create_task(
+                        _reload_watcher(state, paths.live_manifest_path()),
+                        name="op-gateway-reload-watcher",
+                    )
+                yield {"pool": pool}
+            finally:
+                if watcher_task is not None:
+                    watcher_task.cancel()
+                    try:
+                        await watcher_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                state["pool"] = None
+                await pool.stop_all()
         finally:
-            if watcher_task is not None:
-                watcher_task.cancel()
-                try:
-                    await watcher_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            state["pool"] = None
-            await pool.stop_all()
+            sink.close()
+            events.set_sink(None)
 
     mcp = FastMCP("op", lifespan=lifespan)
 
