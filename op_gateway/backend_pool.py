@@ -30,13 +30,85 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
+
+
+# Names of env vars op always forwards from the gateway process to every
+# spawned backend, on top of the MCP SDK's default safelist (PATH, HOME,
+# USERPROFILE, TEMP, etc.). The SDK's safelist is deliberately tiny for
+# sandboxing; this list adds the env vars backends commonly NEED but
+# wouldn't otherwise inherit:
+#
+#   * Git / SSH auth      — backends that run `git fetch` against the
+#                           remote MUST see GIT_ASKPASS so the system-
+#                           wide auth-helper script runs (and not /dev/tty
+#                           in a TTY-less subprocess).
+#   * GitHub PATs         — `gh` and direct GitHub API callers depend on
+#                           these. GH_TOKEN is the read PAT; GH_WRITE_TOKEN
+#                           is the write-scoped PAT.
+#   * Locale / encoding   — explicit UTF-8 hints so subprocess output isn't
+#                           silently mangled into cp1252 mojibake on Windows.
+#   * App-specific overrides — `BIOSPHERE_*` / `CMD_*` / `AMC_ROOT` /
+#                              `CLAUDE_HOME(S)` so backends can locate the
+#                              host project without per-backend env blocks.
+#
+# Per-backend `defn.env` still wins over this list on key collision.
+EXTRA_INHERITED_ENV_VARS: frozenset[str] = frozenset({
+    # Git / SSH auth
+    "GIT_ASKPASS",
+    "GIT_SSH_COMMAND",
+    "SSH_AUTH_SOCK",
+    "GIT_CONFIG_PARAMETERS",
+    # GitHub PATs
+    "GH_TOKEN",
+    "GH_WRITE_TOKEN",
+    "GITHUB_TOKEN",
+    # Locale / encoding
+    "PYTHONUTF8",
+    "LANG",
+    "LC_ALL",
+    # Cross-project location overrides used by AMC backends
+    "AMC_ROOT",
+    "BIOSPHERE_ROOT",
+    "BIOSPHERE_AMC_PATH",
+    "BIOSPHERE_JMC_PATH",
+    "CLAUDE_HOME",
+    "CLAUDE_HOMES",
+    "CMD_USER_CLAUDE_HOME",
+})
+
+
+def _compose_env(defn_env: dict[str, str]) -> dict[str, str]:
+    """Produce the explicit env dict that gets passed to a spawned backend.
+
+    Composition (later wins on key collision):
+      1. MCP SDK's default safelist (PATH, HOME, USERPROFILE, …)
+      2. Extra forward list (git/ssh/PATs/locale/locator vars)
+      3. Per-backend `defn_env` overrides
+
+    Returning an explicit dict — rather than `None` to let the SDK default
+    kick in — closes a sharp edge in the SDK's API: if `env=None`, the SDK
+    uses its safelist; if `env={...}`, the SDK passes that dict UNCHANGED
+    to the spawn (no merge with the safelist). So a backend with even a
+    single `defn.env` entry would otherwise lose PATH and every other
+    inherited var. Always passing the composed dict makes the behaviour
+    uniform regardless of whether `defn.env` is empty or not.
+    """
+    composed: dict[str, str] = dict(get_default_environment())
+    for var in EXTRA_INHERITED_ENV_VARS:
+        value = os.environ.get(var)
+        if value is not None and not value.startswith("()"):
+            composed[var] = value
+    if defn_env:
+        composed.update(defn_env)
+    return composed
 
 from . import events
 from .manifest import BackendDef
@@ -286,7 +358,7 @@ class BackendConnection:
         params = StdioServerParameters(
             command=self.defn.command[0],
             args=list(self.defn.command[1:]),
-            env=dict(self.defn.env) if self.defn.env else None,
+            env=_compose_env(dict(self.defn.env) if self.defn.env else {}),
             cwd=self.defn.cwd,
         )
         self._stack = AsyncExitStack()

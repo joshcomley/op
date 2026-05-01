@@ -14,10 +14,12 @@ from pathlib import Path
 import pytest
 
 from op_gateway.backend_pool import (
+    EXTRA_INHERITED_ENV_VARS,
     STATUS_DOWN,
     STATUS_UP,
     BackendPool,
     BackendUnavailable,
+    _compose_env,
 )
 from op_gateway.manifest import BackendDef, OpDef
 
@@ -188,3 +190,106 @@ async def test_pool_stop_terminates_supervisors() -> None:
     assert conn is not None
     # _supervisor cleared after stop
     assert conn._supervisor is None or conn._supervisor.done()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _compose_env — env composition for spawned backends
+# ─────────────────────────────────────────────────────────────────────
+#
+# Why these tests matter:
+#   The MCP Python SDK only forwards a tiny safelist (PATH, USERPROFILE,
+#   etc.) to spawned children. Any backend that needs to run `git fetch`
+#   would otherwise lose `GIT_ASKPASS` and fall back to /dev/tty in a
+#   TTY-less subprocess — credential prompts hang or fail. `_compose_env`
+#   restores those critical-but-unsafelisted vars from the gateway's own
+#   env without breaking the SDK's sandboxing intent for everything else.
+
+def test_compose_env_includes_sdk_safelist() -> None:
+    """The SDK's default safelist (PATH, USERPROFILE, etc.) must remain
+    present so backends can find executables and resolve $HOME."""
+    composed = _compose_env({})
+    # PATH is in EVERY OS's safelist; assert the easy-to-verify one.
+    import os as _os
+    if _os.environ.get("PATH"):
+        assert "PATH" in composed
+        assert composed["PATH"] == _os.environ["PATH"]
+
+
+def test_compose_env_forwards_git_askpass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without this, mcpup-mcp's `git fetch` falls back to /dev/tty and
+    fails inside a TTY-less subprocess. This is the regression that
+    motivated the helper."""
+    monkeypatch.setenv("GIT_ASKPASS", r"C:\ProgramData\bot-auth\askpass.cmd")
+    composed = _compose_env({})
+    assert composed.get("GIT_ASKPASS") == r"C:\ProgramData\bot-auth\askpass.cmd"
+
+
+def test_compose_env_forwards_github_pats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backends running `gh` or hitting the GitHub API directly need
+    GH_TOKEN / GH_WRITE_TOKEN to authenticate."""
+    monkeypatch.setenv("GH_TOKEN", "ghp_read")
+    monkeypatch.setenv("GH_WRITE_TOKEN", "ghp_write")
+    composed = _compose_env({})
+    assert composed.get("GH_TOKEN") == "ghp_read"
+    assert composed.get("GH_WRITE_TOKEN") == "ghp_write"
+
+
+def test_compose_env_skips_unset_extras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extras that aren't in the gateway's env shouldn't appear in the
+    composed dict — we don't synthesise empty strings."""
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    composed = _compose_env({})
+    assert "GIT_SSH_COMMAND" not in composed
+
+
+def test_compose_env_defn_env_wins_over_inherited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend's per-server env override beats the inherited value.
+    Same precedence the SDK gives when defn.env is non-empty — preserved
+    here so existing op.json overrides keep their meaning."""
+    monkeypatch.setenv("GIT_ASKPASS", "from-gateway")
+    composed = _compose_env({"GIT_ASKPASS": "from-defn"})
+    assert composed["GIT_ASKPASS"] == "from-defn"
+
+
+def test_compose_env_works_with_empty_defn_env() -> None:
+    """An empty defn.env (the common case) must still produce a usable
+    env: SDK safelist + extras intact, no exceptions."""
+    composed = _compose_env({})
+    # PATH should be inherited from the SDK safelist
+    assert isinstance(composed, dict)
+    # And the result is non-empty even when defn.env is empty
+    assert len(composed) > 0
+
+
+def test_compose_env_extra_list_includes_critical_auth_vars() -> None:
+    """Pin the EXTRA_INHERITED_ENV_VARS contents — these are the vars
+    backends practically can't function without on this machine.
+    Adding more is fine; removing any of these is a regression."""
+    must_have = {
+        "GIT_ASKPASS",
+        "SSH_AUTH_SOCK",
+        "GH_TOKEN",
+        "GH_WRITE_TOKEN",
+        "PYTHONUTF8",
+    }
+    assert must_have.issubset(EXTRA_INHERITED_ENV_VARS)
+
+
+def test_compose_env_skips_function_export_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bash function exports (values starting with `()`) are a known
+    security risk and the SDK explicitly skips them. Mirror that here
+    so a malicious GIT_ASKPASS-shaped function export doesn't get
+    forwarded."""
+    monkeypatch.setenv("GIT_ASKPASS", "() { malicious; }")
+    composed = _compose_env({})
+    assert "GIT_ASKPASS" not in composed
