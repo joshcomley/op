@@ -1,16 +1,25 @@
 """Build the SDK-facing tool description from a snapshot.
 
 The description is what Anthropic's prompt-cache hashes, so it must be
-deterministic given the snapshot and stable across unrelated changes.
+deterministic given the snapshot.
 
-Highlights are interpolated as a small bullet list inside the
-description; the full catalog is NOT — it lives in the live `list`
-op, which means catalog changes don't churn the description's bytes
-unless they also affect highlights or the meta-op set.
+Embeds the FULL catalog of proxied ops (grouped by namespace, with
+summaries) so a fresh chat reads the start-of-session prompt and
+already knows what `op` can route to — no `op({operation: "list"})`
+discovery call needed before the first invocation. Highlights are
+still emitted above the catalog for the curated frequently-used
+subset.
+
+Tradeoff: every snapshot promotion that adds, removes, or rewords an
+op now changes the description bytes and busts the prompt cache for
+new sessions. That's an explicit choice — a fresh agent that doesn't
+know `chatfork.ctx` exists is a worse failure than a one-time cache
+miss when ops are added. Adopters who want byte-stability can pin
+`highlights` and skip promotions.
 """
 from __future__ import annotations
 
-from .manifest import Snapshot
+from .manifest import Snapshot, SnapshotEntry
 
 
 META_OPS_DESCRIPTION = """\
@@ -43,7 +52,8 @@ def build_description(snapshot: Snapshot) -> str:
     """Build the static tool description text for the SDK.
 
     The bytes of the returned string ARE the cache key. Anything that
-    varies here invalidates the prompt cache."""
+    varies here invalidates the prompt cache — including the full
+    catalog block, which is intentional (see module docstring)."""
     lines: list[str] = []
     lines.append("Single dispatch tool for all gateway-routed operations.")
     lines.append("")
@@ -56,5 +66,33 @@ def build_description(snapshot: Snapshot) -> str:
         for h in snapshot.highlights:
             lines.append(f"  {h}")
         lines.append("")
+    catalog_block = _format_full_catalog(snapshot.ops)
+    if catalog_block:
+        lines.append(catalog_block)
+        lines.append("")
     lines.append(USAGE_DESCRIPTION.rstrip())
+    return "\n".join(lines)
+
+
+def _format_full_catalog(ops: tuple[SnapshotEntry, ...]) -> str:
+    """Render every domain op grouped by namespace, alphabetical within
+    each. Meta-ops are omitted — they're already documented in
+    META_OPS_DESCRIPTION and would duplicate that surface.
+
+    Returns "" when there are no domain ops (the section is then
+    skipped entirely)."""
+    domain = [op for op in ops if op.namespace != "meta"]
+    if not domain:
+        return ""
+    by_ns: dict[str, list[SnapshotEntry]] = {}
+    for op in domain:
+        by_ns.setdefault(op.namespace, []).append(op)
+    lines: list[str] = [
+        "FULL CATALOG (every proxied op this snapshot exposes, grouped by namespace):",
+    ]
+    for ns in sorted(by_ns.keys()):
+        lines.append(f"  {ns}:")
+        for op in sorted(by_ns[ns], key=lambda o: o.name):
+            summary = op.summary.strip() or "(no summary)"
+            lines.append(f"    {op.name} — {summary}")
     return "\n".join(lines)
