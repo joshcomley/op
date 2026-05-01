@@ -46,35 +46,94 @@ def test_description_omits_highlights_section_when_empty() -> None:
     assert "HIGHLIGHTS" not in desc
 
 
-def test_description_does_not_include_full_catalog() -> None:
-    """The catalog itself must NOT be in the description — that's what
-    `list` is for. Embedding it would mean every op addition busts the
-    cache, defeating the whole point.
-
-    NOTE: the USAGE block of the description contains ONE hardcoded example
-    invocation `op({operation: "recap.recap"})` for illustrative purposes.
-    That's intentionally static — it's the same string regardless of what
-    the snapshot's catalog contains. So we check for a different
-    op name that the static template doesn't reference.
-    """
+def test_description_includes_full_catalog_grouped_by_namespace() -> None:
+    """Every domain op is named in the description so a fresh chat
+    knows what `op` can route to without first calling `list`."""
     snap = Snapshot(
         snapshot_version="0.0.1",
         promoted_at="2026-04-30T00:00:00Z",
         hash="sha256:placeholder",
         highlights=(),
         ops=(
-            SnapshotEntry("widgets", "widgets.frobnicate", "..."),
-            SnapshotEntry("widgets", "widgets.calibrate",  "..."),
+            SnapshotEntry("widgets", "widgets.frobnicate", "Frob a widget"),
+            SnapshotEntry("widgets", "widgets.calibrate",  "Calibrate a widget"),
+            SnapshotEntry("recap",   "recap.recap",        "Catch up"),
         ),
     )
     desc = build_description(snap)
-    assert "widgets.frobnicate" not in desc
-    assert "widgets.calibrate" not in desc
+    assert "FULL CATALOG" in desc
+    # Every op surfaces with its summary
+    assert "widgets.frobnicate — Frob a widget" in desc
+    assert "widgets.calibrate — Calibrate a widget" in desc
+    assert "recap.recap — Catch up" in desc
+    # Namespace headers render
+    assert "  widgets:" in desc
+    assert "  recap:" in desc
 
 
-def test_description_byte_stable_across_op_additions() -> None:
-    """Adding an op to the catalog WITHOUT adding it to highlights MUST
-    NOT change the description bytes. This is the load-bearing property."""
+def test_description_omits_meta_ops_from_full_catalog() -> None:
+    """Meta-ops are documented in META_OPS_DESCRIPTION; the full
+    catalog only enumerates domain ops to avoid duplication."""
+    snap = Snapshot(
+        snapshot_version="0.0.1",
+        promoted_at="2026-04-30T00:00:00Z",
+        hash="sha256:placeholder",
+        highlights=(),
+        ops=(
+            SnapshotEntry("meta",  "list",        "Enumerate"),
+            SnapshotEntry("recap", "recap.recap", "Catch up"),
+        ),
+    )
+    desc = build_description(snap)
+    catalog_section = desc.split("FULL CATALOG")[1] if "FULL CATALOG" in desc else ""
+    # The meta section above mentions `list`, but the FULL CATALOG block
+    # itself shouldn't repeat it.
+    assert "meta:" not in catalog_section
+
+
+def test_description_orders_namespaces_and_ops_alphabetically() -> None:
+    """Stable ordering is required so byte-equivalent snapshots produce
+    byte-equivalent descriptions."""
+    snap = Snapshot(
+        snapshot_version="0.0.1",
+        promoted_at="2026-04-30T00:00:00Z",
+        hash="sha256:placeholder",
+        highlights=(),
+        ops=(
+            SnapshotEntry("zebra", "zebra.b", "z-b"),
+            SnapshotEntry("alpha", "alpha.b", "a-b"),
+            SnapshotEntry("zebra", "zebra.a", "z-a"),
+            SnapshotEntry("alpha", "alpha.a", "a-a"),
+        ),
+    )
+    desc = build_description(snap)
+    # alpha namespace before zebra
+    assert desc.index("alpha:") < desc.index("zebra:")
+    # alpha.a before alpha.b within alpha
+    assert desc.index("alpha.a") < desc.index("alpha.b")
+    # zebra.a before zebra.b within zebra
+    assert desc.index("zebra.a") < desc.index("zebra.b")
+
+
+def test_description_skips_catalog_section_when_only_meta_ops() -> None:
+    """A snapshot with no domain ops (just meta-ops) should not emit an
+    empty FULL CATALOG header."""
+    snap = Snapshot(
+        snapshot_version="0.0.1",
+        promoted_at="2026-04-30T00:00:00Z",
+        hash="sha256:placeholder",
+        highlights=(),
+        ops=(SnapshotEntry("meta", "list", "Enumerate"),),
+    )
+    desc = build_description(snap)
+    assert "FULL CATALOG" not in desc
+
+
+def test_description_changes_when_op_added_or_removed() -> None:
+    """The full-catalog embed is the load-bearing property: adding,
+    removing, or rewording an op MUST change the description bytes
+    (and hence bust the prompt cache for new sessions). That's the
+    explicit tradeoff — discovery beats byte-stability here."""
     desc_a = build_description(Snapshot(
         snapshot_version="0.0.1",
         promoted_at="2026-04-30T00:00:00Z",
@@ -93,7 +152,10 @@ def test_description_byte_stable_across_op_additions() -> None:
             SnapshotEntry("chatfork","chatfork.fork",   "z"),
         ),
     ))
-    assert desc_a == desc_b
+    assert desc_a != desc_b
+    # And the new ops are surfaced in desc_b
+    assert "recap.recap_all" in desc_b
+    assert "chatfork.fork" in desc_b
 
 
 def test_description_changes_when_highlights_change() -> None:
