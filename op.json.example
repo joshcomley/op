@@ -257,6 +257,23 @@
       ]
     },
     {
+      "name": "handover",
+      "command": [
+        "node",
+        "${AMC_ROOT}/code/handover-mcp/handover-server.mjs"
+      ],
+      "cwd": "${AMC_ROOT}/code/handover-mcp",
+      "env": {
+        "CLAUDE_HOME": "C:/Users/joshc/.claude"
+      },
+      "ops": [
+        {
+          "name": "handover",
+          "summary": "Write a self-contained handover document and dispatch a fresh chat to read it and continue"
+        }
+      ]
+    },
+    {
       "name": "autoloop",
       "command": [
         "node",
