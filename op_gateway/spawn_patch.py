@@ -85,17 +85,56 @@ def apply() -> bool:
         cwd=None,
     ):
         """Skip the buggy anyio.open_process primary path entirely.
-        The fallback (raw subprocess.Popen with CREATE_NO_WINDOW) works
-        correctly. Job-Object wiring still happens because we route
-        through the SDK's own fallback function."""
+        Spawn directly via subprocess.Popen + CREATE_NO_WINDOW; wrap
+        in `FallbackProcess` so the rest of `stdio_client` works
+        unchanged. Bypassing MCP SDK's own `_create_windows_fallback_process`
+        is intentional — that function has a try/except that silently
+        falls back to a no-creationflags Popen on the first failure,
+        undoing the workaround."""
         if errlog is None:
             errlog = sys.stderr
-        # The fallback returns a `FallbackProcess` which the SDK
-        # already handles correctly downstream (its stdio_client
-        # interface treats it identically to a native anyio Process).
-        process = await _mcp_win._create_windows_fallback_process(
-            command, args, env, errlog, cwd,
-        )
+        # Do the spawn DIRECTLY here (don't route through MCP SDK's
+        # `_create_windows_fallback_process` — that has its own
+        # try/except that silently falls back to a NO-creationflags
+        # Popen call if the first one raises, undoing the whole
+        # workaround). Use the same FallbackProcess wrapping the SDK
+        # uses so the rest of `stdio_client` works unchanged.
+        import subprocess as _sp
+        # Coerce errlog to a usable subprocess stderr target. Popen
+        # accepts file descriptors, PIPE, DEVNULL, or file objects
+        # with .fileno(). If errlog is a custom stream wrapping a
+        # JSON-RPC pipe (no .fileno()), route to DEVNULL so the spawn
+        # succeeds with CREATE_NO_WINDOW intact.
+        safe_errlog: object = errlog
+        try:
+            fd = errlog.fileno() if hasattr(errlog, "fileno") else None
+            if fd is None or fd < 0:
+                safe_errlog = _sp.DEVNULL
+        except (OSError, ValueError):
+            safe_errlog = _sp.DEVNULL
+        try:
+            popen_obj = _sp.Popen(
+                [command, *args],
+                stdin=_sp.PIPE,
+                stdout=_sp.PIPE,
+                stderr=safe_errlog,
+                env=env,
+                cwd=cwd,
+                bufsize=0,
+                creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            # Fail loudly — don't silently spawn a console-attached
+            # backend. The caller will see this and the user can
+            # report it.
+            print(
+                f"spawn_patch: subprocess.Popen({command}) raised "
+                f"{type(exc).__name__}: {exc} — re-raising rather "
+                f"than silently spawning with a conhost",
+                file=sys.stderr, flush=True,
+            )
+            raise
+        process = _mcp_win.FallbackProcess(popen_obj)
         # The SDK normally wires the process to a Job Object inside
         # `create_windows_process` (see `_maybe_assign_process_to_job`).
         # Mirror that for the fallback path too so child-tree cleanup
@@ -139,5 +178,16 @@ def apply() -> bool:
         "mcp.os.win32.utilities AND mcp.client.stdio to use the "
         "subprocess.Popen fallback path (avoids conhost.exe windows on "
         "each backend spawn — MCP SDK upstream bug)"
+    )
+    # Defensive: server.py calls apply() at module import time, BEFORE
+    # logging.basicConfig runs in main(), so the log.info above gets
+    # dropped on the floor (no handler attached yet). Mirror to stderr
+    # directly so we can prove from the gateway's captured stderr that
+    # the patch actually applied.
+    print(
+        "spawn_patch: monkey-patched create_windows_process in "
+        "mcp.os.win32.utilities AND mcp.client.stdio to skip the buggy "
+        "anyio path (no conhost.exe per backend)",
+        file=sys.stderr, flush=True,
     )
     return True
