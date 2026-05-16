@@ -20,9 +20,16 @@ from typing import Any, AsyncIterator
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from . import catalog, dispatch, events, paths
+from . import catalog, dispatch, events, paths, spawn_patch
 from .backend_pool import BackendPool
 from .manifest import LiveManifest, Snapshot, load_live, load_snapshot
+
+
+# Apply the MCP-SDK Windows-spawn workaround BEFORE the backend pool
+# spawns anything. Skips the SDK's buggy anyio.open_process path that
+# allocates a conhost.exe window per backend on Windows. No-op on POSIX.
+# See `op_gateway.spawn_patch` docstring for the full mechanism.
+spawn_patch.apply()
 
 
 log = logging.getLogger(__name__)
