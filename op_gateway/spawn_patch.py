@@ -112,10 +112,32 @@ def apply() -> bool:
         return process
 
     _mcp_win.create_windows_process = _patched_create_windows_process  # type: ignore[assignment]
+
+    # IMPORTANT: `mcp.client.stdio` does `from mcp.os.win32.utilities import
+    # create_windows_process` AT IMPORT TIME, and its
+    # `_create_platform_compatible_process` (the function `stdio_client`
+    # actually calls) references `create_windows_process` as a BARE NAME
+    # resolved from the `mcp.client.stdio` module namespace. So patching
+    # only `mcp.os.win32.utilities` leaves `mcp.client.stdio`'s own
+    # reference still bound to the original buggy function. Patch both
+    # explicitly — same target function on each — and add any other
+    # site we discover.
+    try:
+        from mcp.client import stdio as _mcp_stdio
+        if hasattr(_mcp_stdio, "create_windows_process"):
+            _mcp_stdio.create_windows_process = _patched_create_windows_process  # type: ignore[assignment]
+    except ImportError:
+        # `mcp.client.stdio` not importable on this install — primary
+        # patch above still covers any other caller that does
+        # `from mcp.os.win32.utilities import create_windows_process`
+        # at call time (rather than import time).
+        pass
+
     _PATCH_APPLIED = True
     log.info(
-        "spawn_patch: monkey-patched mcp.os.win32.utilities.create_windows_process "
-        "to use subprocess.Popen fallback path (avoids conhost.exe windows on "
+        "spawn_patch: monkey-patched create_windows_process in "
+        "mcp.os.win32.utilities AND mcp.client.stdio to use the "
+        "subprocess.Popen fallback path (avoids conhost.exe windows on "
         "each backend spawn — MCP SDK upstream bug)"
     )
     return True
